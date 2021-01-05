@@ -1,22 +1,71 @@
 use std::net::{SocketAddr, TcpStream};
-use std::io::{self, Read, Write, BufReader};
+use std::io::{self, Write, BufReader};
 use std::fs::File;
-use std::convert::TryFrom;
 
-use super::protocol;
+use super::protocol::{self, ProtocolConnection};
 
 type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 
+trait LoadFile {
+    fn file_state(&mut self) -> &mut Option<File>;
+
+    fn load_file<T: Into<String>>(&mut self, filepath: T) -> io::Result<()> {
+        let file = File::open(filepath.into())?;
+        *(self.file_state()) = Some(file);
+        Ok(())
+    }
+}
+
+impl LoadFile for Disconnected {
+    fn file_state(&mut self) -> &mut Option<File> {
+        &mut self.file
+    }
+}
+
+impl LoadFile for Connected {
+    fn file_state(&mut self) -> &mut Option<File> {
+        &mut self.file
+    }
+}
+
+impl<S> LoadFile for Client<S>
+    where S: LoadFile
+{
+    fn file_state(&mut self) -> &mut Option<File> {
+        self.state.file_state()
+    }
+}
+
+impl ProtocolConnection for Connected {
+    fn connection(&mut self) -> &mut TcpStream {
+        &mut self.connection
+    }
+}
+
+impl ProtocolConnection for Negotiating {
+    fn connection(&mut self) -> &mut TcpStream {
+        &mut self.connection
+    }
+}
+
+impl ProtocolConnection for Sending {
+    fn connection(&mut self) -> &mut TcpStream {
+        &mut self.connection
+    }
+}
+
+impl<S> ProtocolConnection for Client<S>
+    where S: ProtocolConnection
+{
+    fn connection(&mut self) -> &mut TcpStream {
+        self.state.connection()
+    }
+}
 /// The client is used to send files to the server
 #[derive(Debug)]
 pub struct Client<S> {
     state: S,
     pub error: Option<Box<dyn std::error::Error>>,
-}
-
-fn load_file<T: Into<String>>(filepath: T) -> io::Result<File> {
-    let file = File::open(filepath.into())?;
-    Ok(file)
 }
 
 impl Client<Disconnected> {
@@ -45,11 +94,6 @@ impl Client<Disconnected> {
             },
             Err(error) => Err(Client { state: Disconnected { file: self.state.file }, error: Some(error) }),
         }
-    }
-
-    pub fn load_file<T: Into<String>>(&mut self, filepath: T) -> io::Result<()> {
-        self.state.file = Some(load_file(filepath)?);
-        Ok(())
     }
 
     /// Convenience method for end user to send a file using the configured client
@@ -95,25 +139,9 @@ impl Client<Disconnected> {
 pub struct Connected { connection: TcpStream, file: Option<File> }
 
 impl Client<Connected> {
-    fn message(&mut self, message: protocol::Message) -> BoxResult<()> {
-        self.state.connection.write(&message.as_bytes())?;
-        Ok(())
-    }
-
-    pub fn receive_message(&mut self) -> BoxResult<protocol::Message> {
-        // TODO: Interpret response from server and act accordingly
-        // Currently we're persisting with the awkward state machine approach for the client
-        // so the application code will need to call accept or deny for us based on the message :(
-        let mut buffer = [0; 1];
-        self.state.connection.read(&mut buffer)?;
-        let message = protocol::Message::try_from(buffer[0])?;
-        println!("received message from server: {:?}", &message);
-        Ok(message)
-    }
-
     pub fn request<T: Into<String>>(mut self, filename: T) -> BoxResult<Client<Negotiating>> {
         if self.state.file.is_some() {
-            self.message(protocol::Message::FileTransferRequest)?;
+            self.send_message(protocol::Message::FileTransferRequest)?;
             if let protocol::Message::Ack = self.receive_message()? {
                 self.send_filename(filename)?;
                 Ok(Client {
@@ -147,7 +175,7 @@ impl Client<Connected> {
         let mut attempt = 0;
         // Say Goodbye and wait for a Goodbye from server (or timeout)
         loop {
-            if let Err(e) = self.message(protocol::Message::Goodbye) {
+            if let Err(e) = self.send_message(protocol::Message::Goodbye) {
                 eprintln!("Error saying Goodbye: Attempt {}", attempt);
                 attempt += 1;
                 if attempt >= max_attempts {
@@ -162,28 +190,12 @@ impl Client<Connected> {
             }
         }
     }
-
-    pub fn load_file<T: Into<String>>(&mut self, filepath: T) -> io::Result<()> {
-        self.state.file = Some(load_file(filepath)?);
-        Ok(())
-    }
 }
 
 #[derive(Debug)]
 pub struct Negotiating { connection: TcpStream, file: File }
 
 impl Client<Negotiating> {
-    pub fn receive_message(&mut self) -> BoxResult<protocol::Message> {
-        // TODO: Interpret response from server and act accordingly
-        // Currently we're persisting with the awkward state machine approach for the client
-        // so the application code will need to call accept or deny for us based on the message :(
-        let mut buffer = [0; 1];
-        self.state.connection.read(&mut buffer)?;
-        let message = protocol::Message::try_from(buffer[0])?;
-        println!("received message from server: {:?}", &message);
-        Ok(message)
-    }
-
     pub fn accept(self) -> Client<Sending> {
         Client {
             state: Sending { connection: self.state.connection, file: self.state.file },
@@ -197,11 +209,6 @@ impl Client<Negotiating> {
             error: None,
         }
     }
-
-    pub fn load_file<T: Into<String>>(&mut self, filepath: T) -> io::Result<()> {
-        self.state.file = load_file(filepath)?;
-        Ok(())
-    }
 }
 
 #[derive(Debug)]
@@ -209,7 +216,7 @@ pub struct Sending { connection: TcpStream, file: File }
 
 impl Client<Sending> {
     pub fn finish(mut self) -> Result<Client<Connected>, Client<Sending>> {
-        match self.message(protocol::Message::Goodbye) {
+        match self.send_message(protocol::Message::Goodbye) {
             Ok(_) => Ok(Client {
                 state: Connected { connection: self.state.connection, file: None },
                 error: None,
@@ -221,29 +228,13 @@ impl Client<Sending> {
         }
     }
 
-
-    pub fn send_file(&mut self) -> io::Result<()> {
+    pub fn send_file(&mut self) -> BoxResult<()> {
         let size = self.state.file.metadata()?.len();
-        let mut buffer = BufReader::new(&mut self.state.file);
         // send file size so server knows how much to read
+        
         self.state.connection.write(&size.to_be_bytes())?;
+        let mut buffer = BufReader::new(&mut self.state.file);
         io::copy(&mut buffer, &mut self.state.connection)?;
         Ok(())
-    }
-
-    fn message(&mut self, message: protocol::Message) -> BoxResult<()> {
-        self.state.connection.write(&message.as_bytes())?;
-        Ok(())
-    }
-
-    pub fn receive_message(&mut self) -> BoxResult<protocol::Message> {
-        // TODO: Interpret response from server and act accordingly
-        // Currently we're persisting with the awkward state machine approach for the client
-        // so the application code will need to call accept or deny for us based on the message :(
-        let mut buffer = [0; 1];
-        self.state.connection.read(&mut buffer)?;
-        let message = protocol::Message::try_from(buffer[0])?;
-        println!("received message from server: {:?}", &message);
-        Ok(message)
     }
 }

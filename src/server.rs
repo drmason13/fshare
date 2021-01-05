@@ -2,9 +2,8 @@ use std::net::{ToSocketAddrs, TcpStream, TcpListener};
 use std::io::{Read, Write, BufWriter, BufReader, BufRead};
 use std::path::PathBuf;
 use std::fs::{self, File};
-use std::convert::TryFrom;
 
-use super::protocol;
+use super::protocol::{self, ProtocolConnection};
 
 type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -20,6 +19,12 @@ pub struct Server {
     directory: PathBuf,
     state: Option<protocol::State>,
     filename: Option<String>,
+}
+
+impl ProtocolConnection for Server {
+    fn connection(&mut self) -> &mut TcpStream {
+        self.connection.as_mut().unwrap()
+    }
 }
 
 #[derive(Debug)]
@@ -115,15 +120,6 @@ impl Server {
         }
     }
 
-    fn receive_message(&mut self) -> BoxResult<protocol::Message> {
-        // All our protocol messages serialize to a single byte!
-        let mut buf = [0; 1];
-        self.connection.as_mut().unwrap().read(&mut buf)?;
-        let message = protocol::Message::try_from(buf[0])?;
-        println!("Received message from client: {:?}", &message);
-        Ok(message)
-    }
-
     fn receive_filename(&mut self) -> BoxResult<()> {
         // Currently we auto accept any filename
         let mut reader = BufReader::new(self.connection.as_mut().unwrap());
@@ -205,13 +201,5 @@ impl Server {
                 break Ok(())
             }
         }
-    }
-
-    fn send_message(&mut self, message: protocol::Message) -> BoxResult<()> {
-        println!("{:?}", &message);
-        let bytes = message.as_bytes();
-        // this function must not be called if connection is not yet initialised
-        self.connection.as_mut().unwrap().write(&bytes)?;
-        Ok(())
     }
 }
