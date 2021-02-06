@@ -1,6 +1,6 @@
 /// Protocol
 ///
-/// ```
+/// ```text
 ///   Client     |                             | Server
 ///  ------------|                             |------------------
 /// Disconnected |                             | Listening
@@ -23,12 +23,11 @@
 ///              |<-------- Goodbye -----------|
 /// Disconnected |                             | Listening
 /// ```
-
 use std::convert::TryFrom;
+use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::io::{Write, Read};
 
-type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
+use anyhow::bail;
 
 /// "Phases" of the protocol, or states for the server to track progress of each connection
 /// The server will match on this to decide how to read incoming data and interpret messages
@@ -45,13 +44,13 @@ pub(crate) trait ProtocolConnection {
     fn connection(&mut self) -> &mut TcpStream;
 
     /// Send a protocol message through the connection
-    fn send_message(&mut self, message: Message) -> BoxResult<()> {
+    fn send_message(&mut self, message: Message) -> anyhow::Result<()> {
         self.connection().write(&message.as_bytes())?;
         Ok(())
     }
-    
+
     /// Receive a protocol message from the connection
-    fn receive_message(&mut self) -> BoxResult<Message> {
+    fn receive_message(&mut self) -> anyhow::Result<Message> {
         let mut buffer = [0; 1];
         self.connection().read(&mut buffer)?;
         let message = Message::try_from(buffer[0])?;
@@ -60,7 +59,7 @@ pub(crate) trait ProtocolConnection {
 }
 
 trait Client {
-    fn send_filename<T: Into<String>>(&mut self, filename: T) -> BoxResult<()>;
+    fn send_filename<T: Into<String>>(&mut self, filename: T) -> anyhow::Result<()>;
 }
 
 /// Messages passed between Client and Server
@@ -73,7 +72,7 @@ pub enum Message {
 }
 
 impl TryFrom<u8> for Message {
-    type Error = Error;
+    type Error = anyhow::Error;
 
     fn try_from(byte: u8) -> Result<Self, Self::Error> {
         match byte {
@@ -81,7 +80,7 @@ impl TryFrom<u8> for Message {
             43 => Ok(Message::RequestDenied),
             200 => Ok(Message::Ack),
             255 => Ok(Message::Goodbye),
-            _ => Err(Error::Message),
+            _ => bail!("Could not decode message: `{}`", byte),
         }
     }
 }
@@ -96,22 +95,3 @@ impl Message {
         }
     }
 }
-
-#[derive(Debug)]
-pub enum Error {
-    Generic(String),
-    Message,
-    Behaviour,
-}
-
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            Error::Generic(error) => write!(f, "Error: {}", error),
-            Error::Message => write!(f, "Protocol Message Error. The message could not be encoded/decoded properly due to invalid input"),
-            Error::Behaviour => write!(f, "Protocol Behaviour Error. The protocol is not being followed correctly, stop it you!"),
-        }
-    }
-}
-
-impl std::error::Error for Error {}

@@ -1,15 +1,15 @@
-use std::net::{SocketAddr, TcpStream};
-use std::io::{self, Write, BufReader};
 use std::fs::File;
+use std::io::{self, BufReader, Write};
+use std::net::{SocketAddr, TcpStream};
 
 use super::protocol::{self, ProtocolConnection};
 
-type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
+use anyhow::bail;
 
 trait LoadFile {
     fn file_state(&mut self) -> &mut Option<File>;
 
-    fn load_file<T: Into<String>>(&mut self, filepath: T) -> io::Result<()> {
+    fn load_file<T: Into<String>>(&mut self, filepath: T) -> anyhow::Result<()> {
         let file = File::open(filepath.into())?;
         *(self.file_state()) = Some(file);
         Ok(())
@@ -29,7 +29,8 @@ impl LoadFile for Connected {
 }
 
 impl<S> LoadFile for Client<S>
-    where S: LoadFile
+where
+    S: LoadFile,
 {
     fn file_state(&mut self) -> &mut Option<File> {
         self.state.file_state()
@@ -55,7 +56,8 @@ impl ProtocolConnection for Sending {
 }
 
 impl<S> ProtocolConnection for Client<S>
-    where S: ProtocolConnection
+where
+    S: ProtocolConnection,
 {
     fn connection(&mut self) -> &mut TcpStream {
         self.state.connection()
@@ -65,7 +67,7 @@ impl<S> ProtocolConnection for Client<S>
 #[derive(Debug)]
 pub struct Client<S> {
     state: S,
-    pub error: Option<Box<dyn std::error::Error>>,
+    pub error: Option<anyhow::Error>,
 }
 
 impl Client<Disconnected> {
@@ -78,26 +80,47 @@ impl Client<Disconnected> {
 }
 
 #[derive(Debug)]
-pub struct Disconnected { file: Option<File> }
+pub struct Disconnected {
+    file: Option<File>,
+}
 
 impl Client<Disconnected> {
-    pub fn try_connection<S: Into<String>>(&self, connection_string: S) -> BoxResult<TcpStream> {
+    pub fn try_connection<S: Into<String>>(
+        &self,
+        connection_string: S,
+    ) -> anyhow::Result<TcpStream> {
         let remote_addr = connection_string.into().parse::<SocketAddr>()?;
         Ok(TcpStream::connect(remote_addr)?)
     }
 
-    pub fn connect<S: Into<String>>(self, connection_string: S) -> Result<Client<Connected>, Client<Disconnected>> {
+    pub fn connect<S: Into<String>>(
+        self,
+        connection_string: S,
+    ) -> Result<Client<Connected>, Client<Disconnected>> {
         match self.try_connection(connection_string) {
             Ok(connection) => {
-               connection.set_read_timeout(Some(std::time::Duration::new(5, 0))).unwrap();
-               Ok(Client { state: Connected { connection, file: self.state.file }, error: None })
-            },
-            Err(error) => Err(Client { state: Disconnected { file: self.state.file }, error: Some(error) }),
+                connection
+                    .set_read_timeout(Some(std::time::Duration::new(5, 0)))
+                    .unwrap();
+                Ok(Client {
+                    state: Connected {
+                        connection,
+                        file: self.state.file,
+                    },
+                    error: None,
+                })
+            }
+            Err(error) => Err(Client {
+                state: Disconnected {
+                    file: self.state.file,
+                },
+                error: Some(error),
+            }),
         }
     }
 
     /// Convenience method for end user to send a file using the configured client
-    pub fn send(mut self, address: String, file: String) -> BoxResult<()> {
+    pub fn send(mut self, address: String, file: String) -> anyhow::Result<()> {
         self.load_file(&file)?;
         /* Convenient API to aim for...
         client
@@ -126,7 +149,7 @@ impl Client<Disconnected> {
                     let _disconnected_client = connected_client.goodbye();
                     println!("Disconnected, the server did not accept our request");
                 }
-            },
+            }
             Err(e) => {
                 eprintln!("Unable to connect: {}", e.error.unwrap());
             }
@@ -136,36 +159,45 @@ impl Client<Disconnected> {
 }
 
 #[derive(Debug)]
-pub struct Connected { connection: TcpStream, file: Option<File> }
+pub struct Connected {
+    connection: TcpStream,
+    file: Option<File>,
+}
 
 impl Client<Connected> {
-    pub fn request<T: Into<String>>(mut self, filename: T) -> BoxResult<Client<Negotiating>> {
+    pub fn request<T: Into<String>>(mut self, filename: T) -> anyhow::Result<Client<Negotiating>> {
         if self.state.file.is_some() {
             self.send_message(protocol::Message::FileTransferRequest)?;
-            if let protocol::Message::Ack = self.receive_message()? {
+            let received = self.receive_message()?;
+            if let protocol::Message::Ack = received {
                 self.send_filename(filename)?;
                 Ok(Client {
-                    state: Negotiating { connection: self.state.connection, file: self.state.file.unwrap(), },
+                    state: Negotiating {
+                        connection: self.state.connection,
+                        file: self.state.file.unwrap(),
+                    },
                     error: None,
                 })
             } else {
-                Err(Box::new(protocol::Error::Message))
+                bail!("Expected Ack, received: `{:?}`", received)
             }
         } else {
-            Err(Box::new(protocol::Error::Behaviour))
+            bail!("Cannot request to transfer file: no file has been configured!")
         }
     }
 
-    pub fn send_filename<T: Into<String>>(&mut self, filename: T) -> io::Result<()> {
+    pub fn send_filename<T: Into<String>>(&mut self, filename: T) -> anyhow::Result<()> {
         let filename = filename.into();
         self.state.connection.write_all(filename.as_bytes())?;
         println!("sent filename: {}", filename);
         Ok(())
     }
 
-    fn disconnect(self, error: Option<Box<dyn std::error::Error>>) -> Client<Disconnected> {
+    fn disconnect(self, error: Option<anyhow::Error>) -> Client<Disconnected> {
         Client {
-            state: Disconnected { file: self.state.file },
+            state: Disconnected {
+                file: self.state.file,
+            },
             error,
         }
     }
@@ -180,12 +212,12 @@ impl Client<Connected> {
                 attempt += 1;
                 if attempt >= max_attempts {
                     eprintln!("Max attempts to say Goodbye reached. Disconnecting");
-                    break self.disconnect(Some(e))
+                    break self.disconnect(Some(e));
                 };
             } else {
                 if let Ok(protocol::Message::Goodbye) = self.receive_message() {
                     // close connection without error
-                    break self.disconnect(None)
+                    break self.disconnect(None);
                 }
             }
         }
@@ -193,32 +225,47 @@ impl Client<Connected> {
 }
 
 #[derive(Debug)]
-pub struct Negotiating { connection: TcpStream, file: File }
+pub struct Negotiating {
+    connection: TcpStream,
+    file: File,
+}
 
 impl Client<Negotiating> {
     pub fn accept(self) -> Client<Sending> {
         Client {
-            state: Sending { connection: self.state.connection, file: self.state.file },
+            state: Sending {
+                connection: self.state.connection,
+                file: self.state.file,
+            },
             error: None,
         }
     }
 
     pub fn deny(self) -> Client<Connected> {
         Client {
-            state: Connected { connection: self.state.connection, file: None },
+            state: Connected {
+                connection: self.state.connection,
+                file: None,
+            },
             error: None,
         }
     }
 }
 
 #[derive(Debug)]
-pub struct Sending { connection: TcpStream, file: File }
+pub struct Sending {
+    connection: TcpStream,
+    file: File,
+}
 
 impl Client<Sending> {
     pub fn finish(mut self) -> Result<Client<Connected>, Client<Sending>> {
         match self.send_message(protocol::Message::Goodbye) {
             Ok(_) => Ok(Client {
-                state: Connected { connection: self.state.connection, file: None },
+                state: Connected {
+                    connection: self.state.connection,
+                    file: None,
+                },
                 error: None,
             }),
             Err(e) => Err(Client {
@@ -228,10 +275,10 @@ impl Client<Sending> {
         }
     }
 
-    pub fn send_file(&mut self) -> BoxResult<()> {
+    pub fn send_file(&mut self) -> anyhow::Result<()> {
         let size = self.state.file.metadata()?.len();
         // send file size so server knows how much to read
-        
+
         self.state.connection.write(&size.to_be_bytes())?;
         let mut buffer = BufReader::new(&mut self.state.file);
         io::copy(&mut buffer, &mut self.state.connection)?;

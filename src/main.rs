@@ -1,40 +1,62 @@
-use fshare::{ServerBuilder, Client, Disconnected};
+use argh::FromArgs;
 
-type BoxResult<T> = Result<T, Box<dyn std::error::Error>>;
+use fshare::{Client, Disconnected, ServerBuilder};
 
-#[derive(Debug)]
-enum AppError {
-    ArgsError(String)
+/// send or receive files between hosts
+#[derive(FromArgs, PartialEq, Debug)]
+struct Args {
+    #[argh(subcommand)]
+    subcommand: SubCommand,
 }
 
-impl std::error::Error for AppError {}
+#[derive(FromArgs, PartialEq, Debug)]
+#[argh(subcommand)]
+enum SubCommand {
+    Client(ClientArgs),
+    Server(ServerArgs),
+}
 
-impl std::fmt::Display for AppError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            AppError::ArgsError(s) => write!(f, "{}", s)
-        }
+/// Run the client to send files to an fshare host
+#[derive(FromArgs, PartialEq, Debug)]
+#[argh(subcommand, name = "client")]
+struct ClientArgs {
+    /// the address of the remote fshare server to send files to
+    #[argh(option, short = 'a')]
+    address: String,
+
+    /// a relative or absolute path to the file to send
+    #[argh(positional)]
+    file: String,
+}
+
+/// Run the server to receive files from an fshare client
+#[derive(FromArgs, PartialEq, Debug)]
+#[argh(subcommand, name = "server")]
+struct ServerArgs {
+    /// the address to bind the server to
+    #[argh(option, short = 'a', default = r#"String::from("127.0.0.1:8080")"#)]
+    address: String,
+
+    /// the directory in which to store received files
+    #[argh(positional, default = r#"String::from("./")"#)]
+    directory: String,
+}
+
+fn main() -> anyhow::Result<()> {
+    let args: Args = argh::from_env();
+    match args.subcommand {
+        SubCommand::Client(args) => client(args.address, args.file),
+        SubCommand::Server(args) => server(args.address, args.directory),
     }
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args = std::env::args().skip(1);
-    match args.next().as_deref() {
-        Some("server") => server(args.next(), args.next()),
-        Some("client") => client(args.next(), args.next()),
-        _ => Err(Box::new(AppError::ArgsError(String::from("Incorrect Argument. use `fshare server` or `fshare client` to start the server or client respectively")))),
-    }
-}
-
-fn client(address: Option<String>, file: Option<String>) -> BoxResult<()> {
-    let file = file.ok_or(Box::new(AppError::ArgsError(String::from("Missing argument for file to load. Please provide a filepath to send to the server.\n\nfshare client <address> <filepath>"))))?;
-    let address =  address.ok_or(Box::new(AppError::ArgsError("Missing address argument. Please provide an address to connect to the server.\n\nfshare client <address> <filepath>".to_string())))?;
+fn client(address: String, file: String) -> anyhow::Result<()> {
     Client::<Disconnected>::new().send(address, file)
 }
 
-fn server(address: Option<String>, directory: Option<String>) -> BoxResult<()> {
-    let mut builder = ServerBuilder::new();
-    builder.directory(directory.unwrap_or("./".to_string()))?;
-    let mut server = builder.build()?;
-    server.run(address.unwrap_or("127.0.0.1:8080".to_string()))
+fn server(address: String, directory: String) -> anyhow::Result<()> {
+    let mut server = ServerBuilder::new();
+    server.directory(directory)?;
+    let mut server = server.build()?;
+    server.run(address)
 }
