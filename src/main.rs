@@ -16,7 +16,7 @@ enum SubCommand {
     Server(ServerArgs),
 }
 
-/// Run the client to send files to an fshare host
+/// Run the client to send files to an fshare server
 #[derive(FromArgs, PartialEq, Debug)]
 #[argh(subcommand, name = "client")]
 struct ClientArgs {

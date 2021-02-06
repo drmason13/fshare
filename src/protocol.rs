@@ -1,28 +1,28 @@
-/// Protocol
-///
-/// ```text
-///   Client     |                             | Server
-///  ------------|                             |------------------
-/// Disconnected |                             | Listening
-///              |-- <Successful Connection> ->|
-///    Connected |                             | Connected
-///              |---- FileTransferRequest --->|
-///    Connected |                             | Connected
-///              |<---------- Ack -------------|
-///  Negotiating |                             | Negotiating
-///              |----- <Stream FileName> ---->|
-///  Negotiating |                             | Negotiating
-///              |<---------- Ack -------------|
-///      Sending |                             | Receiving
-///              |--- <Stream File Content> -->|
-///      Sending |                             | Receiving
-///              |<---------- Ack -------------|
-///    Connected |                             | Connected
-///              |--------- Goodbye ---------->|
-///    Connected |                             | Connected
-///              |<-------- Goodbye -----------|
-/// Disconnected |                             | Listening
-/// ```
+//! # Protocol
+//! ```text
+//!   Client     |                             | Server
+//!  ------------|                             |------------------
+//! Disconnected |                             | Listening
+//!              |-- <Successful Connection> ->|
+//!    Connected |                             | Connected
+//!              |---- FileTransferRequest --->|
+//!    Connected |                             | Connected
+//!              |<---------- Ack -------------|
+//!  Negotiating |                             | Negotiating
+//!              |----- <Stream FileName> ---->|
+//!  Negotiating |                             | Negotiating
+//!              |<---------- Ack -------------|
+//!      Sending |                             | Receiving
+//!              |--- <Stream File Content> -->|
+//!      Sending |                             | Receiving
+//!              |<---------- Ack -------------|
+//!    Connected |                             | Connected
+//!              |--------- Goodbye ---------->|
+//!    Connected |                             | Connected
+//!              |<-------- Goodbye -----------|
+//! Disconnected |                             | Listening
+//! ```
+
 use std::convert::TryFrom;
 use std::io::{Read, Write};
 use std::net::TcpStream;
