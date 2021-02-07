@@ -96,6 +96,12 @@ pub struct Client<S> {
     pub error: Option<anyhow::Error>,
 }
 
+#[derive(Debug)]
+pub struct Disconnected {
+    file: Option<File>,
+    filename: Option<String>,
+}
+
 impl Client<Disconnected> {
     pub fn new() -> Client<Disconnected> {
         Client {
@@ -106,15 +112,7 @@ impl Client<Disconnected> {
             error: None,
         }
     }
-}
 
-#[derive(Debug)]
-pub struct Disconnected {
-    file: Option<File>,
-    filename: Option<String>,
-}
-
-impl Client<Disconnected> {
     pub fn try_connection<S: Into<String>>(
         &self,
         connection_string: S,
