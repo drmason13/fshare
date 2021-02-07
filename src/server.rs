@@ -133,6 +133,7 @@ impl Server {
             .file_name()
             .ok_or(anyhow!("Empty filename received!"))?;
         full_path.push(filename);
+        println!("saving received file to: {:?}", &full_path);
         let file = File::create(full_path)?;
         let mut writer = BufWriter::new(file);
 
